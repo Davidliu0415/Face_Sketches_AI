@@ -1,196 +1,207 @@
-# 人脸与素描匹配 AI 项目
+# Face Sketches AI
 
-本项目用于训练一个“人脸照片-素描图像”匹配模型。整体结构参考 `gc2sa_net`：配置、数据、网络、训练和评估相互独立，方便后续替换数据集、模型头或损失函数。
+人脸照片与素描图像跨模态匹配项目。
 
-## 模型设计
+本项目用于训练一个 **Face-to-Sketch Retrieval** 模型：给定一张真实人脸照片，在素描库中检索出同一身份对应的素描图像。项目采用共享的 `MobileFaceNet` 主干网络，将照片和素描映射到同一个 embedding 空间，并结合 `TripletLoss`、`BatchHardTripletLoss` 和双分支 `ArcFaceHead` 进行训练与对比实验。
 
-- 主干网络：`MobileFaceNet`
-- 特征维度：默认 `512`
-- 特征归一化：输出 embedding 使用 L2 normalize
-- 分类头：两个相互独立的 ArcFace 二分类头
-  - `face_head`：人脸分支分类头
-  - `sketch_head`：素描分支分类头
-- 匹配损失：TripletLoss
-  - anchor：人脸照片
-  - positive：同身份素描
-  - negative：不同身份素描
+## 项目目标
 
-默认二分类标签为：正样本 `1`，负样本 `0`。如果后续要改成身份多分类，可以在 `configs/params.py` 中调整 `face_num_classes` 和 `sketch_num_classes`。
+- 构建人脸照片到素描图像的跨模态检索系统。
+- 使用共享 backbone 学习统一的人脸/素描 embedding。
+- 对比 Triplet、ArcFace、Triplet + ArcFace 等训练策略。
+- 输出 Top-1、Top-5、MRR、mAP、mean positive cosine 等检索指标。
+- 保存 checkpoint、训练指标、测试结果和失败匹配样本，方便后续分析。
 
-## 目录说明
+## 当前模型
 
 ```text
-configs/
-  datasets_config.py      数据路径配置
-  params.py               训练超参数
-data/
-  dataset.py              Triplet 数据集与测试配对数据集
-  train_manifest.csv      训练 triplet 清单，本地生成，不提交 Git
-  val_manifest.csv        验证 triplet 清单，本地生成，不提交 Git
-  images/                 训练/验证图片，本地数据，不提交 Git
-  test/                   测试集 dataset01、dataset02、dataset03，本地数据，不提交 Git
-network/
-  mobilefacenet.py        MobileFaceNet 主干
-  heads.py                ArcFace 分类头
-  losses.py               TripletLoss
-  face_sketch_net.py      完整匹配模型
-training/
-  main.py                 基础训练入口
-  train.py                单轮训练与验证逻辑
-eval/
-  metrics.py              检索评估指标
-train_val_test.py         一键训练、验证、测试脚本
-run_train_val_test.bat    Windows 双击运行脚本
+FaceSketchMatcher
+  -> shared MobileFaceNet backbone
+  -> face_head: ArcFaceHead
+  -> sketch_head: ArcFaceHead
 ```
 
-## 数据位置
-
-当前项目默认读取以下本地路径：
+训练样本以 triplet 形式组织：
 
 ```text
-D:\AI\AI_V2\data\images\structured_face_sketch_dataset
-D:\AI\AI_V2\data\test\dataset01
-D:\AI\AI_V2\data\test\dataset02
-D:\AI\AI_V2\data\test\dataset03
+anchor   = 人脸照片
+positive = 同身份素描
+negative = 不同身份素描
 ```
 
-训练和验证使用 CSV manifest：
+训练时主要损失由以下部分组成：
+
+- `TripletLoss`：拉近同身份照片/素描，推远不同身份样本。
+- `BatchHardTripletLoss`：在 batch 内挖掘更难的正负样本。
+- `ArcFaceHead` + CE loss：分别约束人脸分支和素描分支的身份判别能力。
+
+## 推荐阅读顺序
+
+如果你是第一次看这个项目，建议按下面顺序阅读：
+
+1. [docs/00_reading_order.md](docs/00_reading_order.md)：学习路线和代码阅读顺序。
+2. [docs/01_project_overview.md](docs/01_project_overview.md)：项目任务、模型思路和数据流总览。
+3. [docs/02_folder_and_file_guide.md](docs/02_folder_and_file_guide.md)：每个文件夹和主要代码文件的作用。
+4. [docs/03_training_and_evaluation_flow.md](docs/03_training_and_evaluation_flow.md)：从 `train_val_test.py` 到训练、验证、测试的调用链。
+5. [docs/04_experiment_stages.md](docs/04_experiment_stages.md)：`research_1` 到 `research_4` 的实验设计。
+6. [docs/research_plan.md](docs/research_plan.md)：更完整的研究计划记录。
+
+## 目录结构
 
 ```text
-D:\AI\AI_V2\data\train_manifest.csv
-D:\AI\AI_V2\data\val_manifest.csv
+Face_Sketches_AI/
+  configs/                 路径配置和训练超参数
+  data/                    Dataset、manifest 处理和数据准备脚本
+  network/                 MobileFaceNet、ArcFaceHead、loss 和总模型
+  training/                训练、验证、检索报告和实验辅助逻辑
+  eval/                    检索指标和失败案例分析
+  research_1/              Triplet baseline 实验
+  research_2/              ArcFace only 实验
+  research_3/              ArcFace + Triplet 实验
+  research_4/              CUFSF identity split 协议实验
+  docs/                    项目说明、学习顺序和研究计划
+  checkpoints/             训练输出目录，权重和结果文件默认写到这里
+  models/                  预训练/导出模型占位目录
+  logs/                    日志占位目录
+  train_val_test.py        一键训练、验证、测试入口
+  run_train_val_test.bat   Windows 双击运行脚本
+  requirements.txt         Python 依赖
 ```
 
-manifest 的核心字段如下：
+更细的文件说明见 [docs/02_folder_and_file_guide.md](docs/02_folder_and_file_guide.md)。
+
+## 环境准备
+
+建议使用 Python 3.10+ 和 PyTorch 2.x。
+
+```bash
+pip install -r requirements.txt
+```
+
+当前依赖较少：
+
+```text
+torch>=2.0
+numpy>=1.24
+pillow>=10.0
+```
+
+如果使用 GPU，需确保本机 PyTorch 与 CUDA 环境匹配。
+
+## 数据准备
+
+默认数据路径在 `configs/datasets_config.py` 中配置：
+
+```text
+data/images/structured_face_sketch_dataset
+data/train_manifest.csv
+data/val_manifest.csv
+data/test/dataset01
+data/test/dataset02
+data/test/dataset03
+```
+
+训练和验证使用 CSV manifest，核心字段如下：
 
 ```csv
-face_anchor,sketch_positive,sketch_negative,face_binary_label,sketch_binary_label,sketch_negative_label
+face_anchor,sketch_positive,sketch_negative,face_binary_label,sketch_binary_label,sketch_negative_label,identity,negative_identity
 ```
 
-相对路径会从 `configs/datasets_config.py` 中的 `image_root` 开始解析。
+测试集有两类来源：
 
-## 准备 dataset03
+- 目录型测试集：例如 `dataset01/archive/photos` + `dataset01/archive/sketches`。
+- manifest 型测试集：例如 `dataset03/processed/manifests/*.csv`。
 
-`dataset03` 使用 IIIT-D Sketch Database 目录。先运行准备脚本，它会扫描 Viewed、Semi-forensic、Forensic 子集，生成统一的 `processed/photos`、`processed/sketches` 和 `processed/manifests/*.csv`：
+`data/prepare_dataset03.py` 可以整理 IIIT-D Sketch Database 相关的 `dataset03` 子集：
 
 ```bash
 python data/prepare_dataset03.py
 ```
 
-如果只想整理已有本地文件、不联网下载缺失源：
+如果只希望使用本地已有文件，不联网下载缺失来源：
 
 ```bash
 python data/prepare_dataset03.py --no-download
 ```
 
-可选参数：
+数据、权重和运行结果默认不提交 Git。`.gitignore` 已忽略 `data/images/`、`data/test/`、`data/*.csv`、`checkpoints/`、`models/` 和 `logs/`。
 
-```text
---lfw-root       已下载并解压的 LFW 根目录
---lfw-archive    LFW 官方压缩包路径
---fgnet-root     已下载并解压的 FG-NET 根目录
---fgnet-archive  FG-NET 压缩包路径
---cufs-root      CUHK/CUFS 照片根目录；默认会优先复用本地 dataset02
---force-download 重新下载/覆盖已准备的外部资源
---no-download    禁止联网，只生成当前可用样本和缺失报告
-```
+## 快速开始
 
-准备完成后，测试脚本会自动发现非空 manifest，并在结果中加入 `dataset03_all` 以及可用的 dataset03 子集行。缺失、下载失败、无法校验或被跳过的样本会写入：
-
-```text
-data/test/dataset03/processed/manifests/missing_dataset03.csv
-```
-
-补图策略是官方/原始来源优先：CUHK 优先复用本地 `dataset02` 或用户提供的 CUFS 根目录；LFW 使用官方包中的 `Name/Name_0001.jpg`；FG-NET 使用用户提供的原始/可信 archive 或镜像；Forensic 只纳入 txt 中明确给出照片与素描双 URL 且能通过图像校验的样本，不自动拆分合成图。
-
-参考来源：[IIIT-D Sketch Database](https://iab-rubric.org/old1/resources/sketchDatabase.html)、[IIIT-D README PDF](https://iab-rubric.org/images/pdf/papers/Readme_SketchDB.pdf)、[CUFS 说明](https://www.idiap.ch/software/bob/docs/bob/bob.db.cuhk_cufs/stable/index.html)、[LFW 下载规则参考](https://docs.pytorch.org/vision/0.25/_modules/torchvision/datasets/lfw.html)、[FG-NET 来源索引](https://cvhci.iar.kit.edu/429_451.php)。
-
-## 一键训练、验证、测试
-
-推荐直接运行：
-
-```bash
-python train_val_test.py
-```
-
-Windows 下也可以双击：
-
-```text
-run_train_val_test.bat
-```
-
-如果命令行提示 `Python was not found`，说明系统的 `python` 命令指向了 Windows Store 占位入口；此时优先使用 `run_train_val_test.bat`，它会自动寻找项目虚拟环境或 Codex 运行时里的 `python.exe`。
-
-脚本流程：
-
-1. 读取 `data/train_manifest.csv` 训练模型
-2. 每轮使用 `data/val_manifest.csv` 验证
-3. 保存 `best.pth` 和 `last.pth`
-4. 使用最佳模型在 `dataset01`、`dataset02` 和已准备好的 `dataset03` 子集上做人脸到素描的 Top-1 / Top-5 检索测试
-
-输出文件默认保存在：
-
-```text
-checkpoints/train_val_test_时间戳/
-```
-
-其中包括：
-
-```text
-best.pth
-last.pth
-metrics.csv
-```
-
-## 常用命令
-
-快速检查模型能否前向与反向传播：
+做一次不依赖真实数据的前向/反向检查：
 
 ```bash
 python train_val_test.py --dry-run
 ```
 
-只跑少量样本调试完整流程：
+用少量样本跑完整训练、验证、测试链路：
 
 ```bash
-python train_val_test.py --epochs 1 --limit-train 64 --limit-val 64 --limit-test 64
+python train_val_test.py --epochs 1 --limit-train 64 --limit-val 64 --limit-test 64 --batch-size 16 --eval-batch-size 32
 ```
 
-调整 batch size 和训练轮数：
+正式训练：
 
 ```bash
-python train_val_test.py --epochs 30 --batch-size 16 --eval-batch-size 32
+python train_val_test.py --epochs 30 --batch-size 64 --eval-batch-size 128 --amp
 ```
 
-4090D 24GB 推荐使用默认配置：实际 `batch-size=64`、验证/测试 `eval-batch-size=128`，并默认开启 AMP 混合精度。这个配置比直接堆大 batch 更稳。
+Windows 下也可以运行：
 
-```bash
-python train_val_test.py --batch-size 64 --eval-batch-size 128 --amp
+```text
+run_train_val_test.bat
 ```
 
-如果仍然显存不足，降低实际 batch：
+如果系统 `python` 指向 Windows Store 占位入口，`run_train_val_test.bat` 会优先寻找 `.venv`、Codex runtime、`py -3` 或系统 `python`。
 
-```bash
-python train_val_test.py --batch-size 32 --eval-batch-size 64 --amp
+## 主流程
+
+`train_val_test.py` 是完整入口：
+
+```text
+读取参数
+  -> 构建 identity label map
+  -> 构建 FaceSketchMatcher
+  -> 构建训练/验证 DataLoader
+  -> train_one_epoch()
+  -> evaluate_triplet_epoch()
+  -> 保存 best.pth / last.pth
+  -> retrieval_report()
+  -> 写出 metrics.csv / test_results.csv / failed_matches.csv
 ```
 
-如果想在显存允许的情况下模拟更大的有效 batch，可以再加梯度累积，例如实际 batch 64、累积 2 次：
+输出目录默认类似：
 
-```bash
-python train_val_test.py --batch-size 64 --accumulation-steps 2 --eval-batch-size 128 --amp
+```text
+checkpoints/train_val_test_YYYYMMDD_HHMMSS/
 ```
 
-每 50 个 batch 打印一次进度：
+常见输出文件：
 
-```bash
-python train_val_test.py --log-interval 50
+```text
+best.pth
+last.pth
+metrics.csv
+test_results.csv
+failed_matches.csv
+retrieval_diagnostics.csv
+config.json
 ```
 
-加载已有模型，只做验证和测试：
+## 实验阶段
 
-```bash
-python train_val_test.py --skip-train --checkpoint checkpoints\train_val_test_xxxxxxxx\best.pth
-```
+项目内置了四组实验入口：
+
+| 阶段 | 入口 | 目标 |
+|---|---|---|
+| `research_1` | `research_1/run_baseline.py` | Triplet baseline，只用匹配损失建立基础检索模型 |
+| `research_2` | `research_2/run_arcface_only.py` | ArcFace only，观察分类约束对检索 embedding 的影响 |
+| `research_3` | `research_3/run_arcface_triplet.py` | ArcFace + Triplet，联合训练当前默认方向 |
+| `research_4` | `research_4/run_cufsf_protocol.py` | CUFSF 500/694 identity split 协议实验 |
+
+详细说明见 [docs/04_experiment_stages.md](docs/04_experiment_stages.md)。
+
+## 常用命令
 
 只训练和验证，不跑测试：
 
@@ -198,20 +209,61 @@ python train_val_test.py --skip-train --checkpoint checkpoints\train_val_test_xx
 python train_val_test.py --skip-test
 ```
 
+加载已有 checkpoint，只做验证和测试：
+
+```bash
+python train_val_test.py --skip-train --checkpoint checkpoints\train_val_test_xxxxxxxx\best.pth
+```
+
+降低显存占用：
+
+```bash
+python train_val_test.py --batch-size 32 --eval-batch-size 64 --amp
+```
+
+使用梯度累积模拟更大 batch：
+
+```bash
+python train_val_test.py --batch-size 64 --accumulation-steps 2 --eval-batch-size 128 --amp
+```
+
+每 50 个 batch 打印一次训练进度：
+
+```bash
+python train_val_test.py --log-interval 50
+```
+
 ## 主要参数
 
-大部分默认值在 `configs/params.py` 中：
+大部分默认参数在 `configs/params.py` 中：
 
 ```text
 embedding_size = 512
-batch_size = 16
+batch_size = 64
+eval_batch_size = 128
 epochs = 30
 lr = 1e-3
 triplet_margin = 0.5
-arcface_scale = 64.0
+triplet_weight = 1.0
+batch_hard_weight = 0.5
+face_ce_weight = 1.0
+sketch_ce_weight = 1.0
+arcface_scale = 30.0
 arcface_margin = 0.35
+image_size = 112
 ```
 
-## 备注
+## 评估指标
 
-`data/images/`、`data/test/`、`data/*.csv`、`checkpoints/`、`models/` 和 `logs/` 已在 `.gitignore` 中忽略，避免把大体积数据集和模型权重提交到 GitHub。
+项目使用 face embedding 与 sketch embedding 的余弦相似度矩阵做检索评估：
+
+- `Top-1`：正确素描是否排名第一。
+- `Top-5`：正确素描是否出现在前五。
+- `MRR`：第一个正确结果排名倒数的平均值。
+- `mAP`：平均精度均值。
+- `mean_positive_cosine`：正确配对的平均余弦相似度。
+- `failed_matches.csv`：记录 Top-1 错误样本，方便人工分析。
+
+## 许可证
+
+本项目使用 [MIT License](LICENSE)。
