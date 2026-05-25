@@ -14,8 +14,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from configs import datasets_config as data_config
 from configs import params
-from data.dataset import FaceSketchTripletDataset
-from network import FaceSketchMatcher, TripletLoss
+from data.dataset import FaceSketchTripletDataset, build_identity_label_map
+from network import BatchHardTripletLoss, FaceSketchMatcher, TripletLoss
 from training.train import train_one_epoch
 
 
@@ -37,12 +37,12 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
-def build_model(device):
+def build_model(device, face_num_classes=None, sketch_num_classes=None):
     model = FaceSketchMatcher(
         embedding_size=params.embedding_size,
         dropout=params.dropout,
-        face_num_classes=params.face_num_classes,
-        sketch_num_classes=params.sketch_num_classes,
+        face_num_classes=face_num_classes or params.face_num_classes,
+        sketch_num_classes=sketch_num_classes or params.sketch_num_classes,
         arcface_scale=params.arcface_scale,
         arcface_margin=params.arcface_margin,
     )
@@ -53,14 +53,15 @@ def run_dry_check(model, device):
     model.train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=params.lr, weight_decay=params.weight_decay)
     criterion = TripletLoss(margin=params.triplet_margin)
+    batch_hard = BatchHardTripletLoss(margin=params.triplet_margin)
 
     batch_size = 2
     face = torch.randn(batch_size, 3, params.image_size, params.image_size, device=device)
     sketch_pos = torch.randn(batch_size, 3, params.image_size, params.image_size, device=device)
     sketch_neg = torch.randn(batch_size, 3, params.image_size, params.image_size, device=device)
-    face_labels = torch.ones(batch_size, dtype=torch.long, device=device)
-    sketch_labels = torch.ones(batch_size, dtype=torch.long, device=device)
-    sketch_neg_labels = torch.zeros(batch_size, dtype=torch.long, device=device)
+    face_labels = torch.arange(batch_size, dtype=torch.long, device=device)
+    sketch_labels = torch.arange(batch_size, dtype=torch.long, device=device)
+    sketch_neg_labels = torch.arange(batch_size, dtype=torch.long, device=device).roll(1)
 
     face_emb = model.embed(face)
     pos_emb = model.embed(sketch_pos)
@@ -71,6 +72,10 @@ def run_dry_check(model, device):
     sketch_logits = model.sketch_head(torch.cat([pos_emb, neg_emb], dim=0), torch.cat([sketch_labels, sketch_neg_labels], dim=0))
     loss = loss + torch.nn.functional.cross_entropy(face_logits, face_labels)
     loss = loss + torch.nn.functional.cross_entropy(sketch_logits, torch.cat([sketch_labels, sketch_neg_labels], dim=0))
+    loss = loss + batch_hard(
+        torch.cat([face_emb, pos_emb, neg_emb], dim=0),
+        torch.cat([face_labels, sketch_labels, sketch_neg_labels], dim=0),
+    )
 
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
@@ -88,16 +93,19 @@ def main():
     device = params.device
     print(f"Running on device: {device}")
 
-    model = build_model(device)
-
     if args.dry_run:
+        model = build_model(device)
         run_dry_check(model, device)
         return
+
+    identity_to_label = build_identity_label_map(args.manifest)
+    model = build_model(device, face_num_classes=len(identity_to_label), sketch_num_classes=len(identity_to_label))
 
     dataset = FaceSketchTripletDataset(
         manifest_path=args.manifest,
         image_root=args.image_root,
         image_size=params.image_size,
+        identity_to_label=identity_to_label,
     )
     data_loader = DataLoader(
         dataset,
@@ -110,6 +118,7 @@ def main():
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=params.weight_decay)
     criterion = TripletLoss(margin=params.triplet_margin)
+    batch_hard = BatchHardTripletLoss(margin=params.triplet_margin)
 
     for epoch in range(args.epochs):
         stats = train_one_epoch(
@@ -118,7 +127,9 @@ def main():
             optimizer=optimizer,
             device=device,
             triplet_loss=criterion,
+            batch_hard_loss=batch_hard,
             triplet_weight=params.triplet_weight,
+            batch_hard_weight=params.batch_hard_weight,
             face_ce_weight=params.face_ce_weight,
             sketch_ce_weight=params.sketch_ce_weight,
         )
@@ -137,9 +148,11 @@ def main():
             "dropout": params.dropout,
             "face_num_classes": params.face_num_classes,
             "sketch_num_classes": params.sketch_num_classes,
+            "num_identities": len(identity_to_label),
             "arcface_scale": params.arcface_scale,
             "arcface_margin": params.arcface_margin,
             "triplet_margin": params.triplet_margin,
+            "batch_hard_weight": params.batch_hard_weight,
         }
         torch.save({"model": model.state_dict(), "config": config_snapshot}, checkpoint_path)
         print(f"Saved checkpoint: {checkpoint_path}")

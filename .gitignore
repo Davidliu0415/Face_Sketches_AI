@@ -16,6 +16,7 @@ runs/
 wandb/
 
 data/images/
+data/test/
 data/*.csv
 
 checkpoints/*
